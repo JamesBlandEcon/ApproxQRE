@@ -1,0 +1,295 @@
+---
+title: 'Approximate computation and estimation of quantal response equilibrium through simulation'
+subtitle: 'Online appendix'
+author: James R. Bland^[The University of Toledo. james.bland@utoledo.edu https://orcid.org/0000-0002-7117-9998]
+date: "`r Sys.Date()`"
+output: 
+  bookdown::html_document2:
+    citation_package: natbib
+    global_numbering: true
+    toc: false
+bibliography: ../bib.bib
+biblio-style: "chicago"
+fontsize: 12pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,cache=TRUE)
+```
+
+The full and most up-to-date Online Appendix can be found here: https://github.com/JamesBlandEcon/ApproxQRE
+
+The purpose of this Appendix is to present some additional examples of computing and estimating logit QRE using the methods described in the main body of this paper. As such, much of its value is in the code provided in the Appendix, and not necessarily in this document, which mainly summarizes the results. Please look at the code! James Bland (james.bland@utoledo.edu) would be delighted if you had questions about it!
+
+In order to run the code, you will need to have a working version of *R* [@R] with the *Tidyverse* [@Tidyverse] and *RStan* [@RStan] libraries installed. Some of the tables in this document are produced using the *kableExtra* library [@kableExtra].
+
+```{r,message=FALSE,warning=FALSE}
+library(tidyverse)
+library(rstan)
+  options(mc.cores = parallel::detectCores())
+  rstan_options(auto_write = TRUE)
+library(kableExtra)
+  
+R.Version()
+
+stan_version()
+```
+
+# Generalized matching pennies and risk aversion
+
+I use data from @SC2008, which are downloadable from the AER website here: https://www.aeaweb.org/articles?id=10.1257/aer.98.3.938. In particular, I use data from the final 100 (of 200) rounds of play. These data are summarized as counts in `data/SC2008Summarized.rds`, so you will not have to download the data to run the code.
+
+`SC2008.R` runs the estimations that are reported in this section. This is done with the following *Stan* programs:
+
+* `2x2RiskNeutral.stan` estimates the models assuming that players are risk neutral
+* `2x2RiskAversion.stan` estimates the models assuming that players are expected utility maximizers with utility over money $u(x)=x^r$
+* `2x2RiskNeutralEliminateLambda.stan` estimates the models assuming that players are risk neutral, and eliminates $\lambda$ from the calculations (see Section 3 of the main article). I use this to trace out the locus
+
+All three of these programs are designed to handle any experiment studying 2-player, 2-action strategic-form games, with an arbitrary number of games. For simplicity, they use a weighting matrix of $W=w\mathcal I$, where $w>0$ is a scalar. 
+
+First, the script samples from the locus of logit QRE using the $\lambda$-elimination described in Section 3 of the main article. Figure \@ref(fig:SC2008locus) shows these draws for all twelve games in the experiment. 
+
+```{r SC2008locus,fig.cap="Simulated locus of logit QRE from the matching pennies games"}
+
+locus<-"outputs/SC2008_locus.rds" |>
+  readRDS()
+
+(
+  ggplot(data=locus,aes(x=Up,y=Left))
+  +geom_point(size=0.1,alpha=0.1) 
+  +theme_bw() 
+  +facet_wrap(~game) 
+  +coord_fixed(xlim=c(0,1),ylim=c(0,1))
+)
+
+```
+
+
+Table \@ref(tab:SC2008Tab) shows a summary of the posterior distributions of the models assuming risk-neutrality and risk-aversion. For these models, I use the priors for $\lambda$ and $r$ calibrated in @Bland2023, which are:
+
+$$
+\begin{aligned}
+\log \lambda &\sim N(-1.52,1.41^2)\\
+\log r&\sim N(\log(0.5),0.5^2)
+\end{aligned}
+$$
+
+As such, these estimates are most comparable with Table 1 of @Bland2023, rows 4 and 22.
+
+```{r SC2008Tab}
+
+rounding<-4
+
+TAB<-list()
+
+TAB[[1]]<-summary("outputs/SC2008_EstimatesRiskNeutral.rds" |>
+  readRDS())$summary[c("lambda","objFun"),c("mean","sd")] |>
+  round(rounding)
+
+TAB[[2]]<-summary("outputs/SC2008_EstimatesRiskAversion.rds" |>
+  readRDS())$summary[c("lambda","r","objFun"),c("mean","sd")] |>
+  round(rounding)
+
+
+TAB |>
+  kbl(caption = "Summary of the posterior distribution from the matching pennies games.") |>
+  kable_classic(full_width=FALSE) |>
+  add_header_above(c("Risk neutral","Risk averse"))
+
+
+```
+
+# The Volunteer's Dilemma
+
+@GHS2017VD study play in a Volunteer's Dilemma experiment by varying the group size. In this section I replicate their logit QRE analysis. Their results for this are reported in their Tables 3 (for the homogeneous model) and 5 (for the heterogeneous agents models).
+
+Following @GHS2017VD, I estimate two models with heterogeneous players. A "warm glow" model assumes that players receive a bonus utility from volunteering, and a "duplicate aversion" model assumes that players suffer disutility if they volunteer when another player also volunteers.
+In my implementation of these models I take advantage of an observation made in @Bland2023marginal, which notes that QRE can be computed in *marginal* mixed strategies (for this game, at least). In particular, note that a player in the Volunteer's Dilemma only cares about the aggregate probability that an opponent volunteers, not the full joint distribution of types and volunteering. Therefore, we can construct the objective function using:
+
+$$
+\begin{aligned}
+H(\sigma,\lambda)&=E(\sigma(\theta)-q(\sigma,\lambda,\theta))
+\end{aligned}
+$$
+where the expectation is over the players' type $\theta$. Hence, we have only five elements of $H$ to evaluate, one for each group size studied in the experiment. This is in comparison to having $d\times 5$ elements in $H$, where $d$ is the number of discrete types assumed in the model. I compute this expectation using Monte Carlo integration. 
+
+Unlike @GHS2017VD, who use a discretized and truncated normal distribution for the individual-level parameters, I use a continuous (but still truncated and normal) distribution. The reason for this departure from the data's original treatment is that the continuous distribution lends itself to data-augmentation for a hierarchical model. In particular, for both models I assume that:
+
+$$
+\theta \sim \mathrm{truncated\ normal}(\mu,\tau^2,(\mu-\tau,\mu+\tau))
+$$
+
+where $\mu$ is the mean of players' parameter $\theta$, and $\tau$ is its standard deviation. 
+
+Where a parameter is present in a model, I use the following prior:
+
+$$
+\log\lambda \sim N(\log 10,1^2),\quad 
+\mu\sim N(0,1^2),\quad 
+\tau\sim \mathrm{Cauchy}^+(0,1)
+$$
+
+
+
+The scripts relevant to this part of the Appendix are:
+
+* `GHS2017VD_Homogeneous.stan`, which estimates the homogeneous model
+* `GHS2017VD_Heterogeneous.stan`, which estimates both heterogeneous models. The `WarmGlow` data input toggles whether the warm glow or duplicate aversion model is being estimated. 
+* `GHS2017.R`, which runs the estimations in *R*. 
+
+Table \@ref(tab:GHS2017Table) summarizes the posterior distributions of the three estimated models. 
+
+```{r GHS2017Table}
+
+ EstSum<-rbind(
+    summary("outputs/GHS2017_EstimatesHomogeneous.rds" |>
+      readRDS())$summary |>
+      data.frame() |>
+      rownames_to_column(var = "variable") |>
+    mutate(
+      model = "homogeneous"
+    ) 
+    ,
+    "outputs/GHS2017_EstimatesWarmGlow1.rds" |>
+      readRDS() |>
+      data.frame() |>
+      rownames_to_column(var = "variable") |>
+      mutate(
+        model = "warm glow"
+      ) 
+    ,
+    "outputs/GHS2017_EstimatesDuplicateAversion1.rds" |>
+      readRDS() |>
+      data.frame() |>
+      rownames_to_column(var = "variable") |>
+      mutate(
+        model = "duplicate aversion"
+      ) 
+  ) 
+
+rounding <- 3
+
+TAB<-EstSum |>
+  filter(
+    variable=="lambda" | variable=="MU" | variable=="TAU" 
+    | grepl("sigmaV\\[",variable)
+  ) |>
+  mutate(msd = paste0(mean |> round(rounding)," (",sd |> round(rounding),")")) |>
+  pivot_wider(
+    id_cols = variable,
+    names_from = model,
+    values_from  = msd
+  ) 
+
+TAB$variable[1:5]<-c("n = 2","n = 3","n = 6","n = 9", "n = 12")
+
+TAB[is.na(TAB)]<-""
+
+TAB |>
+  kbl(caption = "Summary of the posterior distributions from the Volunteer's Dilemma game. The first five rows of this table show the models' predictions for each of the group sizes studied in this experiement.",booktabs=TRUE) |>
+  kable_classic(full_width=FALSE) |>
+  add_header_above(c(" "=1," "=1,"Heterogeneity"=2))
+  
+
+
+```
+
+# First-price auction with risk-averse bidders
+
+In this section, I simulate the logit QRE for a first-price auction with independent uniform private values and homogeneous, risk-averse bidders. I then use this logit QRE to simulate data and then estimate the parameters of the model, which are choice precision $\lambda$, and $r$ in the CARA utility function:
+
+$$
+u(x)=1-\exp(-rx)
+$$
+
+I use this utility specification instead of the more popular CRRA utility function because it can handle negative payoffs. This is possible in QRE, as players will bid above their value with positive probability (this does not happen in Nash equilibrium). 
+
+I discretize the bid and signal space to $\{0.00, 0.01, 0.02,\ldots,1.00\}$, then sample from the QRE for $\lambda = 10$, $r=0.5$, and $N=3$ bidders per game. I then select from these samples the sample with the largest objective function to find the equilibrium distribution of bids conditional on values. Using this distribution, I simulate data from an experiment with 20 bids per signal (i.e. $20\times 101=2,020$ decisions in total). I then estimate the QRE using these simulated data using a prior of:
+
+$$
+\log\lambda\sim N(\log(1),2),\quad \log r \sim N(\log(1),1)
+$$
+
+Note that these priors are not centered on the true values of $\lambda$ and $r$, but they do have reasonable densities at the true values. 
+
+As I do with the Volunteer's Dilemma application with heterogenous players, I construct the objective function using the *marginal* distribution of bids. This is feasible because only the marginal distribution of bids is important for calculating a bidder's payoff function. In particular, the objective function constructed using:
+
+$$
+\begin{aligned}
+H(\sigma,\lambda,r)&=E(\sigma(s)-q(\sigma,s,\lambda,r))
+\end{aligned}
+$$
+
+where $\sigma(s)$ is the mixed strategy played by a bidder with signal $s$, $q(\sigma,s,\lambda,r)$ is the logit response to mixed strategy profile $\sigma$ given signal $s$, and the expectation is over the signals $s$. 
+
+The scripts relevant to this part of the Appendix are:
+
+* `auction.stan`, which is the *Stan* program for simulating and estimating the QRE, and
+* `auction.R`, which runs the simulation and estimation
+
+To begin with, we can compare the simulated QRE to the estimated QRE by looking at the cumulative density function of bids. This is shown in Figure \@ref(fig:auctionPlotCDF). These are essentially the same curves, which suggests that the model has recovered the parameters well.^[Initially I plotted these two curves on the same axes. They overlapped enough that only one curve was visible. Hence the faceted plot. ] 
+
+```{r auctionPlotCDF,fig.cap = "Cumulative density function of bids. Line shows the posterior means, shaded region is a 95% credible region (2.5th-97.5th percentile). "}
+
+ns<-101 # number of discete bids/signals
+
+auction_QRE<-"outputs/auction_QRE_SimulationSummary.rds" |>
+  readRDS() |>
+  data.frame() |>
+  rownames_to_column(var = "variable") |> 
+  mutate(
+    draws = "simulated QRE"
+  )
+
+auction_estimates<-"outputs/auction_estimates.rds" |>
+  readRDS() |>
+  data.frame() |>
+  rownames_to_column(var = "variable")  |>
+  mutate(
+    draws = "estimates"
+  )
+
+auction<-rbind(auction_QRE,auction_estimates)
+
+plotThis<-auction |> 
+  filter(grepl("bidcdf",variable)) |>
+  mutate(bid = (as.numeric(gsub(".*?([0-9]+).*", "\\1", variable))-1)/(ns-1) )
+
+(
+  ggplot(plotThis,aes(x=bid,y=mean,ymin=X2.5.,ymax=X97.5.))
+  +geom_line()
+  +geom_ribbon(alpha=0.1)
+  +theme_bw()
+  +facet_wrap(~draws)
+  +ylab("cumulative density function of bids")
+)
+
+```
+
+Table \@ref(tab:auctionTable) shows a summary of the (estimated) model's posterior distribution for the fundamental parameters $\lambda$ and $r$. For perspective, the prior standard deviations of these parameters are:
+
+$$
+\begin{aligned}
+\mathrm{sd}(\lambda)&=\sqrt{(\exp(2^2)-1)\exp(2\times\log(1)+2^2)}\approx14.6\\
+\mathrm{sd}(r)&=\sqrt{(\exp(1^2)-1)\exp(2\times\log(1)+1^2)}\approx2.16
+\end{aligned}
+$$
+
+```{r auctionTable}
+
+auction_estimates |>
+  filter(variable=="r" | variable =="lambda" | variable =="objFun") |>
+  select(variable ,mean,sd,X2.5.,X97.5.) |>
+  rename(`2.5%` = X2.5., `97.5%`=X97.5.) |>
+  kbl(caption = "Summary of the posterior distribution of the auction model estimated from simulated data with $\\lambda=10$ and $r=0.5$",digits=4) |>
+  kable_classic(full_width=FALSE) |>
+  add_header_above(c(" "=3,"percentiles"=2))
+
+```
+
+# References {-}
+
+
+
+
+
